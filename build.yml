@@ -1,0 +1,72 @@
+- hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: setup
+  vars:
+    raw_image_path: Rocky-8-GenericCloud-8.6.20220702.0.x86_64.raw
+  tasks:
+    # NB: assumes raw file already available
+    - name: Create mountpoint
+      file:
+        path: /mnt/{{ raw_image_path | basename }}
+        state: directory
+
+    - name: Find next free loop device
+      command: losetup -f
+      register: _losetup_free
+    
+    - name: Setup loop device
+      command: losetup -P {{ _losetup_free.stdout }} {{ raw_image_path }}
+    
+    - name: Find partitions
+      shell: ls {{ _losetup_free.stdout }}p*
+      register: _ls_loopdev
+    
+    - name: Mount image file
+      command: mount {{ _ls_loopdev.stdout }} /mnt/{{ raw_image_path | basename }}
+
+    - name: Create bind-mounts
+      command: mount --bind {{ item }} /mnt/{{ raw_image_path | basename }}{{ item }}
+      loop:
+        - /etc/resolv.conf
+        - /proc
+        - /sys
+
+    - name: Create inventory host
+      add_host:
+        name: /mnt/{{ raw_image_path | basename }}
+        # remote_addr: /mnt/{{ raw_image_path | basename }}
+        ansible_connection: chroot
+        groups: builder
+    
+- hosts: builder
+  become: yes
+  gather_facts: no
+  tags: build
+  tasks:
+    - dnf:
+        name: perl # wasn't installed at all on host
+
+- hosts: localhost
+  become: yes
+  gather_facts: no
+  vars:
+    raw_image_path: Rocky-8-GenericCloud-8.6.20220702.0.x86_64.raw
+  tags: teardown
+  tasks:
+    - name: Umount filesystems
+      command: umount /mnt/{{ raw_image_path | basename }}{{ item }}
+      loop:
+        - /etc/resolv.conf
+        - /proc
+        - /sys
+    
+    - name: Unmount image
+      command: umount /mnt/{{ raw_image_path | basename }}
+
+    - name: Find loop device
+      command: losetup -j {{ raw_image_path }}
+      register: _losetup_j
+    
+    - name: Detatch loop device
+      command: losetup -d "{{ (_losetup_j.stdout | split)[0] | trim(':') }}" # stdout e.g. "/dev/loop0: [2064]:32 (/mnt/image-storage/Rocky-8-GenericCloud-8.6.20220702.0.x86_64.raw)"
